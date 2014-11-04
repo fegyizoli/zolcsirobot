@@ -58,9 +58,11 @@ typedef float                                           fp32;
 typedef double                                          fp64;
 typedef long double                                     fp80;
 
+#include "ring_puffer.h"
 #include "rgb_led.h"
 #include "robot_buttons.h"
 #include "track_control.h"
 #include "robot_pwm.h"
 #include "servo_control.h"
 #include "uart_driver.h"
+#include "sonar.h"

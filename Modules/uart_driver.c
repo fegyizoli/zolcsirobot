@@ -1,316 +1,189 @@
 //fegyizoli @ 2014.09.27.
-//alap UART a raspivel kommunikÃ¡lÃ¡sra
+//alap UART a raspivel kommunikálásra
 #include <modules.h>
 
-#ifdef COM0_EN
-static CTL_ISR_FN_t com0_isr;
 
-CTL_EVENT_SET_t com0_event;
+static CTL_ISR_FN_t uart0_isr;
 
-int8u g_com0_rx_buff[COM0_RX_BUFFSIZE];
-int8u g_com0_tx_buff[COM0_TX_BUFFSIZE];
+uart_struct uart0_stat;
 
-int32u g_com0_framing_error;
-int32u g_com0_overrun_error;
-int32u g_com0_rx_timeout;
-int32u g_com0_received;
-int32u g_com0_transfered;
 
 void UART0_ISR(void)
 {
 ctl_enter_isr();
-com0_isr();
+uart0_isr();
 ctl_exit_isr();
 }
-#endif
 
-#ifdef COM2_EN
-static CTL_ISR_FN_t com2_isr;
-
-CTL_EVENT_SET_t com2_event;
-
-int8u g_com2_rx_buff[COM2_RX_BUFFSIZE];
-int8u g_com2_tx_buff[COM2_TX_BUFFSIZE];
-
-int32u g_com2_framing_error;
-int32u g_com2_overrun_error;
-int32u g_com2_rx_timeout;
-int32u g_com2_received;
-int32u g_com2_transfered;
-
-void UART2_ISR(void)
+void uart0_isr_init(CTL_ISR_FN_t fn)
 {
-ctl_enter_isr();
-com2_isr();
-ctl_exit_isr();
-}
-#endif
-
-
-//mindig:
-// 1 stop bit
-// 0 paritás bit
-// 8 bit adat
-//tetszõleges baud rate
-void uart_isr_init(int8u com, CTL_ISR_FN_t fn)
-{
-int32u com_base;
-int en, com_irq;
+int en;
 en = ctl_global_interrupts_set(0);
-com2_isr = fn;
-switch(com)
+uart0_isr = fn;
+
+UARTIntDisable(UART0_BASE, (UART_INT_OE | UART_INT_FE | UART_INT_RT | UART_INT_TX | UART_INT_RX) ); //biztosra megyek, minden false értéket kitörlök
+if(UARTIntStatus(UART0_BASE,1) == UART_INT_OE)
 {
- case COM0:
- com_base = COM0_BASE;
- break;
- case COM2:
- com_base = COM2_BASE;
- break;
+ UARTIntClear(UART0_BASE,UART_INT_OE);
 }
-UARTIntDisable(com_base, (UART_INT_OE | UART_INT_FE | UART_INT_RT | UART_INT_TX | UART_INT_RX) ); //biztosra megyek, minden false értéket kitörlök
-if(UARTIntStatus(com_base,1) == UART_INT_OE)
+if(UARTIntStatus(UART0_BASE,1) == UART_INT_FE)
 {
- UARTIntClear(com_base,UART_INT_OE);
+ UARTIntClear(UART0_BASE,UART_INT_FE);
 }
-if(UARTIntStatus(com_base,1) == UART_INT_FE)
+if(UARTIntStatus(UART0_BASE,1) == UART_INT_RT)
 {
- UARTIntClear(com_base,UART_INT_FE);
+ UARTIntClear(UART0_BASE,UART_INT_RT);
 }
-if(UARTIntStatus(com_base,1) == UART_INT_RT)
+if(UARTIntStatus(UART0_BASE,1) == UART_INT_TX)
 {
- UARTIntClear(com_base,UART_INT_RT);
+ UARTIntClear(UART0_BASE,UART_INT_TX);
 }
-if(UARTIntStatus(com_base,1) == UART_INT_TX)
+if(UARTIntStatus(UART0_BASE,1) == UART_INT_RX)
 {
- UARTIntClear(com_base,UART_INT_TX);
-}
-if(UARTIntStatus(com_base,1) == UART_INT_RX)
-{
- UARTIntClear(com_base,UART_INT_RX);
-}
-switch(com)
-{
- case COM0:
- com_irq = COM0_ISR_PRIORITY;
- break;
- case COM2:
- com_irq = COM2_ISR_PRIORITY;
- break;
-}
-ctl_set_priority(com_irq,1);
-ctl_unmask_isr(com_irq);
-ctl_global_interrupts_set(en);
-UARTIntEnable(com_base, (UART_INT_OE | UART_INT_FE | UART_INT_RT | UART_INT_TX | UART_INT_RX) );
-UARTEnable(com_base);
+ UARTIntClear(UART0_BASE,UART_INT_RX);
 }
 
-#ifdef COM0_EN
+ctl_set_priority(UART0_ISR_PRIORITY,1);
+ctl_unmask_isr(UART0_ISR_PRIORITY);
+ctl_global_interrupts_set(en);
+UARTIntEnable(UART0_BASE, (UART_INT_OE | UART_INT_FE | UART_INT_RT | /*UART_INT_TX |*/ UART_INT_RX) );
+UARTEnable(UART0_BASE);
+}
+
+//TODO
 CTL_ISR_FN_t uart0_isr_handler(void)
 {
- int32u uart_status;
+ int32u uart_status, lchar;
+ int8u i, sending_char;
+ uart_status = UARTIntStatus(UART0_BASE,true);
+ UARTIntClear(UART0_BASE,uart_status);
  
- uart_status = UARTIntStatus(COM0_BASE,true);
- UARTIntClear(COM0_BASE,uart_status);
- 
- if(uart_status & UART_INT_TX) //küldeni akarnánk
+ if(uart_status & UART_INT_TX)
  {
-  g_com0_transfered++;
+  uart0_stat.tx_interrupts++;
+  while(UARTSpaceAvail(UART0_BASE))
+  {
+   if(ring_buffer_pop(&uart0_stat.tx_buffer,&sending_char) == NO_ERROR)
+   {
+    GPIOPinWrite(RGB_LED_PORT,RGB_LED_BLUE_PIN,RGB_LED_BLUE_PIN); 
+    UARTCharPutNonBlocking(UART0_BASE,sending_char);
+    GPIOPinWrite(RGB_LED_PORT,RGB_LED_BLUE_PIN,RGB_LED_BLUE_PIN); 
+   }
+   else
+   {
+    UARTIntDisable(UART0_BASE, UART_INT_TX); //Ã¼res a TX buffer, letiltjuk a TX interruptot addig
+    break;
+   }
+  }
  }
- if(uart_status & UART_INT_RX) //jött valami
+ if(uart_status & (UART_INT_RX | UART_INT_RT)) //jött valami
  {
-  g_com0_received++;
- }
- if(uart_status & UART_INT_RT) //rx timeout
- {
-  g_com0_rx_timeout++;
+  uart0_stat.rx_interrupts++;
+  i = 0;
+  while(UARTCharsAvail(UART0_BASE)) //szedjÃ¼k ki
+  {
+   GPIOPinWrite(RGB_LED_PORT,RGB_LED_RED_PIN,RGB_LED_RED_PIN);
+   lchar = UARTCharGetNonBlocking(UART0_BASE);
+   GPIOPinWrite(RGB_LED_PORT,RGB_LED_RED_PIN,0);
+   
+   if(ring_buffer_push(&uart0_stat.rx_buffer,(int8u)lchar))
+   {
+    uart0_stat.buffer_overflow++;
+    break;
+   }
+   else
+   {
+    uart0_stat.received++; //debughoz való csak
+	ctl_semaphore_signal(&uart0_stat.rx_sem);
+   }
+   if(ring_buffer_is_full(&uart0_stat.rx_buffer)) //tele van az rx puffer?
+    break;
+  }
+  
  }
  if(uart_status & UART_INT_FE) //framing error
  {
-  g_com0_framing_error++;
+  uart0_stat.framing_error_interrupts++;
  }
  if(uart_status & UART_INT_OE) //overrun error
  {
-  g_com0_overrun_error++;
+  uart0_stat.overrun_error_interrupts++;
  }
 }
-#endif
 
-#ifdef COM2_EN
-CTL_ISR_FN_t uart2_isr_handler(void)
+//BASIC UART FUNCTIONS
+int8u uart0_get_char(int8u* c, int32u timeout_ms)
 {
- int32u uart_status;
- 
- uart_status = UARTIntStatus(COM2_BASE,true);
- UARTIntClear(COM2_BASE,uart_status);
- 
- if(uart_status & UART_INT_TX) //küldeni akarnánk
+ int en;
+ if(ctl_semaphore_wait(&uart0_stat.rx_sem,CTL_TIMEOUT_DELAY, timeout_ms) != 0)
  {
-  GPIOPinWrite(RGB_LED_PORT,RGB_LED_BLUE_PIN,RGB_LED_BLUE_PIN);
-  g_com2_transfered++;
-  SysCtlDelay(SysCtlClockGet() / (1000 * 3)); //1ms delay
-  GPIOPinWrite(RGB_LED_PORT,RGB_LED_BLUE_PIN,0);
- }
- if(uart_status & UART_INT_RX) //jött valami
- {
-  GPIOPinWrite(RGB_LED_PORT,RGB_LED_GREEN_PIN,RGB_LED_GREEN_PIN);
-  g_com2_received++;
-  SysCtlDelay(SysCtlClockGet() / (1000 * 3)); //1ms delay
-  GPIOPinWrite(RGB_LED_PORT,RGB_LED_GREEN_PIN,0);
- }
- if(uart_status & UART_INT_RT) //rx timeout
- {
-  g_com2_rx_timeout++;
- }
- if(uart_status & UART_INT_FE) //framing error
- {
-  g_com2_framing_error++;
- }
- if(uart_status & UART_INT_OE) //overrun error
- {
-  g_com2_overrun_error++;
- }
-}
-#endif
-
-//alap UART függvények
-int8u com_put_char(int8u com, int8u* tx_c)
-{
- int32u com_base;
-
- switch(com)
- {
-  case COM0:
-  com_base = COM0_BASE;
-  break;
-  case COM2:
-  com_base = COM2_BASE;
-  break;
- }
- if(UARTSpaceAvail(com_base))
- {
-  if(UARTCharPutNonBlocking(com_base, *tx_c)) //karakter küldés
-   return NO_ERROR;
+  en = ctl_global_interrupts_set(0);
+  if(ring_buffer_pop(&uart0_stat.rx_buffer, c) == NO_ERROR)
+  {  
+  ctl_global_interrupts_set(en);
+  return UART_GET_OK;
+  }
   else
-   return NO_SPACE_AVAILABLE;
+  {  
+  ctl_global_interrupts_set(en);
+  return UART_BUFF_EMPTY; //ide soha nem szabad befutnia
+  }
  }
  else
  {
-  return NO_SPACE_AVAILABLE;
+  ctl_global_interrupts_set(en);
+  return UART_TIMEOUT; //timeout
  }
 }
 
-int8u com_get_char(int8u com, int8u* rx_c)
+int8u uart0_put_char(int8u c)
 {
- int32s char_l, com_base;
-
- switch(com)
+ int en;
+ int8u tx_char;
+ ctl_semaphore_wait(&uart0_stat.tx_sem,CTL_TIMEOUT_NONE,0); //addig várakoztatjuk a taskot míg küldhetünk
+ en = ctl_global_interrupts_set(0);
+ if(ring_buffer_push(&uart0_stat.tx_buffer, c) == NO_ERROR)
  {
-  case COM0:
-  com_base = COM0_BASE;
-  break;
-  case COM2:
-  com_base = COM2_BASE;
-  break;
- }
-
- if(UARTCharsAvail(com_base))
- {
-  char_l = UARTCharGetNonBlocking(com_base); //itt már nem lehet minuszt kapni, de azért lekérjük csak leszarjuk :)
-  rx_c = (int8u*)(char_l & 0xff);
-  return NO_ERROR;
+  while(UARTSpaceAvail(UART0_BASE))
+  {
+   if(ring_buffer_pop(&uart0_stat.tx_buffer,&tx_char) == NO_ERROR)
+   {
+    ctl_semaphore_signal(&uart0_stat.tx_sem); //sikerült kiszedni a tx pufferbõl a karaktert
+	UARTCharPutNonBlocking(UART0_BASE,tx_char);
+	UARTIntEnable(UART0_BASE, UART_INT_TX); //be kell kapcsolni ezt, mert ugye még az interruptok le vannak tiltva...
+   }
+   else //RING_BUFF_EMPTY
+   {
+	UARTIntDisable(UART0_BASE,UART_INT_TX);
+        break;
+   }
+  }
+  ctl_global_interrupts_set(en);
+  return UART_PUT_OK;
  }
  else
-  return EMPTY_FIFO;
+ {
+  ctl_global_interrupts_set(en);
+  return UART_BUFF_OVERFLOW;  //ide nem futhat sose elméletileg...
+ }
 }
 
-void com_flush(int8u com, int8u what)
+
+//INIT
+void uart0_init(int32u baud)
 {
- switch(com)
- {
-  case COM0:
-  {
-   if(what & TX)
-    memset(&g_com0_tx_buff,0,sizeof(g_com0_tx_buff));
-   if(what & RX)
-    memset(&g_com0_rx_buff,0,sizeof(g_com0_rx_buff));
-  }
-  break;
-
-  case COM2:
-  {
-   if(what & TX)
-    memset(&g_com2_tx_buff,0,sizeof(g_com2_tx_buff));
-   if(what & RX)
-    memset(&g_com2_rx_buff,0,sizeof(g_com2_rx_buff));
-  }
-  break;
- }
+  memset(&uart0_stat,0,sizeof(uart_struct));
+  ctl_semaphore_init(&uart0_stat.rx_sem, 0);
+  ctl_semaphore_init(&uart0_stat.tx_sem, UART_TX_BUFFSIZE);
+  ring_buffer_init(&uart0_stat.rx_buffer);
+  ring_buffer_init(&uart0_stat.tx_buffer);
+  SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
+  SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+  GPIOPinConfigure(GPIO_PA0_U0RX); 
+  GPIOPinConfigure(GPIO_PA1_U0TX);
+  GPIOPinTypeUART(GPIO_PORTA_BASE,(GPIO_PIN_0 | GPIO_PIN_1));
+  UARTFIFOLevelSet(UART0_BASE, UART_FIFO_TX1_8,UART_FIFO_RX4_8);
+  UARTConfigSetExpClk(UART0_BASE, SysCtlClockGet(),baud, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
+  uart0_isr_init((CTL_ISR_FN_t)uart0_isr_handler);
 }
 
-//com init
-void com_init(int8u com, int32u baud)
-{
- int32u com_base, com_periph, com_module;
- switch(com)
- {
-  case COM0:
-  {
-   g_com0_framing_error = 0;
-   g_com0_overrun_error = 0;
-   g_com0_rx_timeout = 0;
-   g_com0_received = 0;
-   g_com0_transfered = 0;
-   ctl_events_init(&com0_event,0);
-   com_base = COM0_BASE;
-   com_periph = COM0_PERIPH;
-   com_module = COM0_MODULE;
-  }
-  break;
-  case COM2:
-  {
-   g_com2_framing_error = 0;
-   g_com2_overrun_error = 0;
-   g_com2_rx_timeout = 0;
-   g_com2_received = 0;
-   g_com2_transfered = 0;
-   ctl_events_init(&com2_event,0);
-   com_base = COM2_BASE;
-   com_periph = COM2_PERIPH;
-   com_module = COM2_MODULE;
-  }
-  break;
- }
- com_flush(com, (RX | TX));
- 
- SysCtlPeripheralEnable(com_periph);
- SysCtlPeripheralEnable(com_module);
- switch(com)
- {
-  case COM0:
-  {
-   GPIOPinConfigure(CONFIGURE_TO_COM0_RX); 
-   GPIOPinConfigure(CONFIGURE_TO_COM0_TX);
-   GPIOPinTypeUART(com_periph,COM0_RX_PIN | COM0_TX_PIN);
-  }
-  break;
-  case COM2:
-  {
-   GPIOPinConfigure(CONFIGURE_TO_COM2_RX); 
-   GPIOPinConfigure(CONFIGURE_TO_COM2_TX);
-   GPIOPinTypeUART(com_periph,COM2_RX_PIN);
-   GPIOPinTypeUART(com_periph,COM2_TX_PIN);
-  }
-  break;
- }
-// UARTFIFOLevelSet(com_base, UART_FIFO_TX1_8,UART_FIFO_RX4_8);
- UARTConfigSetExpClk(com_base, SysCtlClockGet(), baud, (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
- switch(com)
- {
-  case COM0:
-  uart_isr_init(com, (CTL_ISR_FN_t)uart0_isr_handler);
-  break;
-  case COM2:
-  uart_isr_init(com, (CTL_ISR_FN_t)uart2_isr_handler);
-  break;
- }
-}
