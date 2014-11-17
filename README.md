@@ -1,4 +1,4 @@
-zolcsirobot
+ZMO
 ===========
 
 This is my driver library for the tracked robot I'm working on, as a hobby.
