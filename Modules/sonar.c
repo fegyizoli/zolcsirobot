@@ -7,18 +7,24 @@
 //3. ECHO-n ha jön a FALLING_EDGE leállítjuk a timert, vagy ha eltelt a 80 msec
 //4. timer_usec / 58 =  xxx cm
 
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
 #include <modules.h>
 
 static CTL_ISR_FN_t sonar_echo_isr;
 
-CTL_SEMAPHORE_t echo_sem;
+//CTL_SEMAPHORE_t echo_sem;
 
 
-//CTL_EVENT_SET_t  sonar_events;
+CTL_EVENT_SET_t  sonar_events;
 
 static int32u g_obstacle_cm;
 
 void sonar_echo_isr_init(CTL_ISR_FN_t fn);
+void delay_us(int32u t);
+
 
 //ECHO PIN interrupt
 void GPIO_Port_A_ISR(void)
@@ -48,6 +54,7 @@ void sonar_echo_isr_init(CTL_ISR_FN_t fn)
  GPIOPinIntEnable(SONAR_PORT, SONAR_ECHO_PIN);
 }
 
+int32u g_sonar_tmr_cnt;
 CTL_ISR_FN_t sonar_echo_isr_handler(void)
 {
  int32u status, timer_val,timer_period;
@@ -57,41 +64,79 @@ CTL_ISR_FN_t sonar_echo_isr_handler(void)
  {
   if(GPIOPinRead(SONAR_PORT, SONAR_ECHO_PIN) == SONAR_ECHO_PIN)
   {
-//  timer_period = ((SysCtlClockGet() / 1000000) * SONAR_TIMER_MAX_VALUE); 
-//  TimerLoadSet(SONAR_TIMER_BASE, TIMER_A, timer_period);
+  GPIOPinWrite(RGB_LED_PORT,RGB_LED_RED_PIN,RGB_LED_RED_PIN);
   TimerEnable(SONAR_TIMER_BASE, TIMER_A);
   }
-  else
+  if(GPIOPinRead(SONAR_PORT, SONAR_ECHO_PIN) == 0)
   {
-  TimerDisable(SONAR_TIMER_BASE, TIMER_A);
-  timer_val = TimerValueGet(SONAR_TIMER_BASE,TIMER_A);
-  g_obstacle_cm = timer_val / 58;
-  ctl_semaphore_signal(&echo_sem);
+  GPIOPinWrite(RGB_LED_PORT,RGB_LED_RED_PIN,0);
+  g_sonar_tmr_cnt = TimerValueGet(SONAR_TIMER_BASE,TIMER_A);
+  ctl_events_set_clear(&sonar_events,SONAR_ECHO,0);
   }
  }
 }
 
 int32u sonar_ping(void)
 {
+ int32u obj_distance = 0;
  GPIOPinWrite(SONAR_PORT,SONAR_TRIG_PIN,0);
- SysCtlDelay(5);
+ delay_us(5);
  GPIOPinWrite(SONAR_PORT,SONAR_TRIG_PIN,SONAR_TRIG_PIN);
- SysCtlDelay(10);
+ delay_us(10);
  GPIOPinWrite(SONAR_PORT,SONAR_TRIG_PIN,0);
- ctl_semaphore_wait(&echo_sem,CTL_TIMEOUT_NONE,0);
- return g_obstacle_cm;
+ ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS_WITH_AUTO_CLEAR,&sonar_events,SONAR_ECHO,CTL_TIMEOUT_NONE,0);
+ obj_distance = g_sonar_tmr_cnt / 58;
+ return obj_distance;
+}
+
+fp32 sonar_ping_cm(void)
+{
+ int32u val;
+ val = sonar_ping();
+ return ( (fp32)val / 100.0 );
+}
+
+//fp32 sonar_ping_median_cm(int8u sample_cnt)
+//{
+// fp32 samples[sample_cnt], tmp;
+// int8u i,j;
+// for(i=0;i<sample_cnt;i++) //beolvasom a sample_cnt db. mintavételt
+// {
+//  samples[i] = sonar_ping_cm();
+//  ctl_timeout_wait(ctl_get_current_time()+100); //
+// }
+// //rendezem a tömbömet
+// for(i=1;i<sample_cnt;i++)
+// {
+//  tmp = samples[i];
+//  j = i - 1;
+//  while(tmp < samples[j] && j >= 0)
+//  {
+//   samples[j+1] = samples[j];
+//   j--;
+//  }
+//  samples[j+1] = tmp;
+// }
+// //megkeresem a középső elemet -> medián
+// i = sample_cnt / 2;
+// return samples[i];
+//}
+
+
+void delay_us(int32u t)
+{
+ SysCtlDelay((SysCtlClockGet() / 1000000) * t );
 }
 
 
 void sonar_init(void)
 {
  int32u timer_period;
- ctl_semaphore_init(&echo_sem,0);
+ ctl_events_init(&sonar_events,0);
  SysCtlPeripheralEnable(SONAR_PERIPH);
  GPIOPinTypeGPIOOutput(SONAR_PORT,SONAR_TRIG_PIN);
-
  SysCtlPeripheralEnable(SONAR_TIMER);
- TimerConfigure(SONAR_TIMER_BASE,TIMER_CFG_PERIODIC_UP);
+ TimerConfigure(SONAR_TIMER_BASE,TIMER_CFG_A_ONE_SHOT_UP);  //felfele számolós, eventek közti időt számítja elvileg
  timer_period = ((SysCtlClockGet() / 1000000) * SONAR_TIMER_MAX_VALUE); 
  TimerLoadSet(SONAR_TIMER_BASE, TIMER_A, timer_period);
  sonar_echo_isr_init((CTL_ISR_FN_t)sonar_echo_isr_handler);
